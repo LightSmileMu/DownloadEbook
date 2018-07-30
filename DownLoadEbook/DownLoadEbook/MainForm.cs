@@ -1,13 +1,10 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.ComponentModel;
-using System.Data;
 using System.Drawing;
 using System.IO;
-using System.Linq;
 using System.Net;
 using System.Text;
-using System.Threading;
 using System.Windows.Forms;
 using HtmlAgilityPack;
 
@@ -15,9 +12,12 @@ namespace DownLoadEbook
 {
     public partial class MainForm : Form
     {
-        private static readonly object Locker = new object();
-        int pageTotalCount = 763;
-        int pageStep = 5;
+        
+        private int _pageTotalCount;
+        private string url = "http://www.ebook-dl.com/cat/1";
+        private readonly List<BookInfo> _books = new List<BookInfo>();
+        private readonly ImageList _imageList = new ImageList();
+        
 
         public MainForm()
         {
@@ -26,46 +26,19 @@ namespace DownLoadEbook
 
         private void button1_Click(object sender, EventArgs e)
         {
-            progressBar1.Maximum = 763;
             bg_worker.RunWorkerAsync();
         }
 
-        private void SetDataFromPage(object pageInfo)
+        private HtmlAgilityPack.HtmlDocument GetHtml(string url)
         {
-            List<BookInfo> books = new List<BookInfo>();
-
-            PageInfo page = (PageInfo) pageInfo;
-            if (page.StartPage == 0 || page.EndPage == 0)
+            if (string.IsNullOrEmpty(url))
             {
-                return;
-            }
-            int startPage = page.StartPage;
-            int endPage = page.EndPage;
-
-            for (int pageIndex = startPage; pageIndex < endPage; pageIndex++)
-            {
-                books.AddRange(GetDataFromPage(pageIndex));
+                return null;
             }
 
-            lock (Locker)
-            {
-                StringBuilder sb = new StringBuilder();
-                foreach (var bookInfo in books)
-                {
-                    sb.AppendLine(string.Format("{0}\t{1}\t{2}", bookInfo.Id, bookInfo.Name, bookInfo.ImageUrl));
-                }
-                File.AppendAllText(@"D:\books.txt", sb.ToString());
-            }
-        }
+            HtmlAgilityPack.HtmlDocument doc = null;
 
-        private IList<BookInfo> GetDataFromPage(int pageIndex)
-        {
-            Console.WriteLine("pageindex" + pageIndex);
-
-            List<BookInfo> books = new List<BookInfo>();
-
-            //以Get方式调用  
-            HttpWebRequest request = WebRequest.Create(string.Format("http://www.ebook-dl.com/cat/1/pg/{0}", pageIndex)) as HttpWebRequest;
+            HttpWebRequest request = WebRequest.Create(url) as HttpWebRequest;
             try
             {
                 if (request != null)
@@ -75,18 +48,17 @@ namespace DownLoadEbook
                     {
                         if (response != null)
                         {
-                            Stream steam = response.GetResponseStream();                  
+                            Stream steam = response.GetResponseStream();
 
                             if (steam != null)
                             {
                                 StreamReader reader = new StreamReader(steam);
 
                                 string content = reader.ReadToEnd();
-                                HtmlAgilityPack.HtmlDocument doc = new HtmlAgilityPack.HtmlDocument();
+                                doc = new HtmlAgilityPack.HtmlDocument();
                                 doc.LoadHtml(content);
-                                books.AddRange(GetDataFromHtml(doc));
                             }
-                        }                        
+                        }
                     }
                 }
             }
@@ -95,8 +67,7 @@ namespace DownLoadEbook
                 Console.WriteLine(ex.Message);
             }
 
-            return books;
-
+            return doc;
         }
 
         private IList<BookInfo> GetDataFromHtml(HtmlAgilityPack.HtmlDocument doc)
@@ -109,7 +80,7 @@ namespace DownLoadEbook
                 {
                     return books;
                 }
-                var productsNode = doc.DocumentNode.SelectSingleNode("html/body/div[@id='wrapper']/div[@class='container']/div[@class='twelve columns products']");
+                var productsNode = doc.DocumentNode.SelectSingleNode("//div[@class='twelve columns products']");
                 if (productsNode == null)
                 {
                     return books;
@@ -125,6 +96,21 @@ namespace DownLoadEbook
                     }
                     var bookName = bookImgNode.Attributes["alt"].Value;
                     var imgUrl = bookImgNode.Attributes["src"].Value;
+                    var urlContent = imgUrl.Split(new[] {'/'}, StringSplitOptions.RemoveEmptyEntries);
+                    string fileName = urlContent[urlContent.Length -1];
+                    if (!File.Exists(fileName))
+                    {
+                        DownLoadFile(imgUrl, fileName);
+                        
+                    }
+                    if (File.Exists(fileName))
+                    {
+                        if (!_imageList.Images.ContainsKey(fileName))
+                        {
+                            _imageList.Images.Add(fileName, Image.FromFile(fileName));
+                        }
+                    }
+                    
                     if (string.IsNullOrEmpty(bookName))
                     {
                         continue;
@@ -134,10 +120,10 @@ namespace DownLoadEbook
                     if (bookIdNode != null && bookIdNode.Attributes.Contains("href"))
                     {
                         var href = bookIdNode.Attributes["href"].Value;
-                        bookId = href.Split(new char[] { '/' },StringSplitOptions.RemoveEmptyEntries)[1];
+                        bookId = href.Split(new [] { '/' },StringSplitOptions.RemoveEmptyEntries)[1];
                     }
 
-                    books.Add(new BookInfo { Name = bookName, ImageUrl = imgUrl,Id = bookId});
+                    books.Add(new BookInfo { Name = bookName, ImageUrl = fileName, Id = bookId });
                 }                
             }
             catch (Exception ex)
@@ -152,7 +138,7 @@ namespace DownLoadEbook
         {
             try
             {
-                WebClient myWebClient = new System.Net.WebClient();
+                WebClient myWebClient = new WebClient();
                 
                 myWebClient.DownloadFile(url, fileName);
             }
@@ -178,17 +164,23 @@ namespace DownLoadEbook
 
                             byte[] buffer = new byte[1024];
                             FileStream fstream = File.Create(fileName);
-                            int len = 0;
+                            int len=0;
                             do
                             {
-                                len = steam.Read(buffer, 0, buffer.Length);
+                                if (steam != null)
+                                {
+                                    len = steam.Read(buffer, 0, buffer.Length);
+                                }
                                 if (len > 0)
                                 {
                                     fstream.Write(buffer, 0, len);
                                 }
                             } while (len > 0);
                             fstream.Close();
-                            steam.Close();
+                            if (steam != null)
+                            {
+                                steam.Close();
+                            }
                         }
                     }
                 }                
@@ -199,21 +191,38 @@ namespace DownLoadEbook
             }
         }
 
-        private void button2_Click(object sender, EventArgs e)
+        private void btnExportData_Click(object sender, EventArgs e)
         {
-            var lines = File.ReadAllLines("booksName.txt");
-
-            progressBar1.Maximum = lines.Length;
-            progressBar1.Minimum = 0;
-            int bookIndex = 1;
-            foreach (var line in lines)
+            if (_books.Count>0)
             {
-                var infos = line.Split(new string[] { "\t" }, StringSplitOptions.RemoveEmptyEntries);
-                string url = infos[2].Replace(".jpg", "_large.jpg");
-                DownLoadFile(url, string.Format(@"d:\bookImage\{0}_{1}{2}", infos[0], bookIndex, ".jpg"));
-                progressBar1.Value += 1;
-                bookIndex++;
+                try
+                {
+                    using (SaveFileDialog dlg = new SaveFileDialog())
+                    {
+                        dlg.Filter = @"Excel文件|*.xls";
+                        if (dlg.ShowDialog() == DialogResult.OK)
+                        {
+                            StringBuilder sb = new StringBuilder();
+                            foreach (var item in _books)
+                            {
+                                sb.AppendLine(string.Format("{0}\twww.ebook-dl.com/book/{1}", item.Name, item.Id));
+                            }
+
+                            File.AppendAllText(dlg.FileName, sb.ToString());
+                        }
+                    }
+                    MessageBox.Show(@"导出完成！");
+                }
+                catch (Exception exception)
+                {
+                    MessageBox.Show(@"导出出错：" + exception.Message);
+                }
             }
+            else
+            {
+                MessageBox.Show(@"当前无数据！");
+            }
+            
         }
 
         private void MainForm_Load(object sender, EventArgs e)
@@ -228,48 +237,77 @@ namespace DownLoadEbook
             {
                 return;
             }
+            _books.Clear();
+            var doc= GetHtml(url);
 
-            for (int pageIndex = 1; pageIndex <= pageTotalCount; pageIndex += pageStep)
+            List<string> urls = new List<string>();
+            int maxPage;
+            if (doc != null && doc.DocumentNode != null)
             {
-                int endPage;
-                if (pageIndex + pageStep > pageTotalCount)
-                {
-                    endPage = pageTotalCount;
-                }
-                else
-                {
-                    endPage = pageIndex + pageStep;
-                }
-                PageInfo page = new PageInfo() { StartPage = pageIndex, EndPage = endPage, Books = new List<BookInfo>() };
-                SetDataFromPage(page);
-                worker.ReportProgress(endPage  * 100/ pageTotalCount);
-                Thread.Sleep(1000);
+               var paginationNode = doc.DocumentNode.SelectSingleNode("//nav[@class='pagination']");
+               if (paginationNode != null)
+               {
+                  var pageNodes= paginationNode.SelectNodes("ul/li/a");
+                  if (pageNodes.Count > 0)
+                  {
+                      var maxPageNode = pageNodes[pageNodes.Count - 1];
+                      
+                      if (int.TryParse(maxPageNode.InnerText, out maxPage))
+                      {
+                          _pageTotalCount = maxPage;
+                          SetPicbarValueSafe(maxPage);
+                          for (int pageIndex = 2; pageIndex <= maxPage; pageIndex++)
+                          {
+                              urls.Add(string.Format("{0}/pg/{1}", url,pageIndex));
+                          }
+                      }
+                  }
+               }
+            }
+
+            int process = 1;
+            _books.AddRange(GetDataFromHtml(doc));
+            worker.ReportProgress(process);
+            
+            foreach (var pageUrl in urls)
+            {
+                var  docTmp =GetHtml(pageUrl);
+                _books.AddRange(GetDataFromHtml(docTmp));
+                process++;
+                worker.ReportProgress(process);
+            }
+
+            process = _pageTotalCount;
+            worker.ReportProgress(process);
+        }
+
+        private void SetPicbarValueSafe(int value)
+        {
+            if (progressBar1.InvokeRequired)
+            {
+                Action<int> setAction = SetPicbarValueSafe;
+                progressBar1.Invoke(setAction, value);
+            }
+            else
+            {
+                progressBar1.Maximum = value;
             }
         }
 
         private void bg_worker_ProgressChanged(object sender, ProgressChangedEventArgs e)
         {
-            progressBar1.Value = e.ProgressPercentage * pageTotalCount /100;
+            progressBar1.Value = Math.Min(e.ProgressPercentage, progressBar1.Maximum);
         }
 
         private void bg_worker_RunWorkerCompleted(object sender, RunWorkerCompletedEventArgs e)
         {
+            _imageList.ImageSize = new Size(240,256);
+            listView1.LargeImageList = _imageList;
+            foreach (var book in _books)
+            {
+                listView1.Items.Add(book.Id, book.Name, book.ImageUrl);
+            }
             MessageBox.Show(@"操作完成！");
-        }
-
-        private void bg_downBookImg_DoWork(object sender, DoWorkEventArgs e)
-        {
-           
-        }
-
-        private void bg_downBookImg_ProgressChanged(object sender, ProgressChangedEventArgs e)
-        {
-
-        }
-
-        private void bg_downBookImg_RunWorkerCompleted(object sender, RunWorkerCompletedEventArgs e)
-        {
-
         }
     }
 
